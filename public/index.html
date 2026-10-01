@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Decide</title>
+<style>
+:root{--bg:#fafaf7;--fg:#1c1c1e;--mut:#6b6b70;--card:#fff;--line:#e4e4e0;--acc:#ff5a3c;--yes:#22a06b;--no:#8a8a90}
+@media(prefers-color-scheme:dark){:root{--bg:#141416;--fg:#f2f2f4;--mut:#9a9aa2;--card:#1f1f23;--line:#32323a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,system-ui,sans-serif}
+main{max-width:480px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:28px;margin:8px 0 4px}p.sub{color:var(--mut);margin:0 0 20px}
+input,button{font:inherit}input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);margin-bottom:8px}
+button{border:0;border-radius:12px;padding:13px 16px;background:var(--acc);color:#fff;font-weight:600;cursor:pointer;width:100%}
+button.ghost{background:transparent;color:var(--acc);border:1px solid var(--line)}button:disabled{opacity:.5}
+.row{display:flex;gap:10px}.row button{flex:1}
+.stage{position:relative;height:260px;margin:18px 0;touch-action:pan-y}
+.card{position:absolute;inset:0;background:var(--card);border:1px solid var(--line);border-radius:20px;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:26px;font-weight:700;box-shadow:0 8px 24px rgba(0,0,0,.08);user-select:none;touch-action:none}
+.card .tag{position:absolute;top:16px;font-size:18px;font-weight:800;opacity:0;border:3px solid;border-radius:8px;padding:2px 10px}
+.tag.y{left:16px;color:var(--yes);transform:rotate(-12deg)}.tag.n{right:16px;color:var(--no);transform:rotate(12deg)}
+.bar{height:10px;border-radius:5px;background:var(--line);overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--yes)}
+.res{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px}
+.res.win{border-color:var(--yes);box-shadow:0 0 0 2px var(--yes) inset}.res.out{opacity:.5}
+.res b{display:flex;justify-content:space-between;gap:8px}.small{color:var(--mut);font-size:14px}
+.win-banner{text-align:center;font-size:22px;font-weight:800;margin:10px 0 18px}
+.err{color:#d33;margin:8px 0}.link{word-break:break-all;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;font-size:14px;margin-bottom:10px}
+.prog{color:var(--mut);text-align:center}
+</style></head>
+<body><main id="app"></main>
+<script>
+const $app = document.getElementById('app');
+const api = async (path, body) => {
+  const r = await fetch('/api/polls' + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Something went wrong'); return j;
+};
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); kids.flat().forEach(k => e.append(k)); return e; };
+const store = { get: k => { try { return localStorage.getItem(k) } catch { return null } }, set: (k, v) => { try { localStorage.setItem(k, v) } catch {} } };
+const voterId = store.get('voterId') || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)); store.set('voterId', voterId);
+
+function home() {
+  $app.replaceChildren();
+  const q = el('input', { placeholder: 'What are we deciding? e.g. Where do we eat?', maxLength: 100 });
+  const opts = [0, 1, 2].map(() => el('input', { placeholder: 'Option', maxLength: 60 }));
+  const err = el('div', { className: 'err' });
+  const optBox = el('div', {}, opts);
+  const add = el('button', { className: 'ghost', textContent: '+ Add option' });
+  add.onclick = () => { if (optBox.children.length < 8) optBox.append(el('input', { placeholder: 'Option', maxLength: 60 })); };
+  const go = el('button', { textContent: 'Create poll & get link' });
+  go.onclick = async () => {
+    err.textContent = ''; go.disabled = true;
+    try {
+      const r = await api('', { question: q.value, options: [...optBox.children].map(i => i.value) });
+      store.set('admin-' + r.id, r.adminToken); location.href = '/p/' + r.id + '?new=1';
+    } catch (e) { err.textContent = e.message; go.disabled = false; }
+  };
+  $app.append(el('h1', { textContent: 'Decide' }), el('p', { className: 'sub', textContent: 'Can\'t pick? Share a link, everyone swipes, the group winner appears.' }), q, optBox, add, err, el('div', { style: 'height:10px' }), go);
+}
+
+async function poll(pid) {
+  let p; try { p = await api('/' + pid); } catch (e) { $app.replaceChildren(el('h1', { textContent: 'Poll not found' }), el('p', { className: 'sub', textContent: e.message }), el('button', { textContent: 'Start a new poll', onclick: () => location.href = '/' })); return; }
+  const voted = store.get('voted-' + pid) === '1';
+  if (p.closed || voted) return showResults(p);
+  swipe(p);
+}
+
+function swipe(p) {
+  const choices = {}; let i = 0;
+  const name = el('input', { placeholder: 'Your name (optional)', maxLength: 24, value: store.get('name') || '' });
+  const stage = el('div', { className: 'stage' }); const prog = el('div', { className: 'prog' });
+  $app.replaceChildren(el('h1', { textContent: p.question }), el('p', { className: 'sub', textContent: 'Swipe right = I\'m OK with it. Left = no. Tap ✋ to veto.' }), name, stage, prog,
+    el('div', { className: 'row' }, el('button', { className: 'ghost', textContent: '✗ No', onclick: () => answer('no') }), el('button', { className: 'ghost', textContent: '✋ Veto', onclick: () => answer('veto') }), el('button', { textContent: '✓ Yes', onclick: () => answer('yes') })));
+  let card;
+  function render() {
+    stage.replaceChildren();
+    if (i >= p.options.length) return finish();
+    prog.textContent = `${i + 1} of ${p.options.length}`;
+    card = el('div', { className: 'card' }, el('span', { className: 'tag y', textContent: 'YES' }), el('span', { className: 'tag n', textContent: 'NO' }), p.options[i]);
+    let sx = null, dx = 0;
+    card.onpointerdown = e => { sx = e.clientX; card.setPointerCapture(e.pointerId); };
+    card.onpointermove = e => { if (sx === null) return; dx = e.clientX - sx; card.style.transform = `translateX(${dx}px) rotate(${dx / 20}deg)`; card.querySelector('.y').style.opacity = Math.max(0, dx / 100); card.querySelector('.n').style.opacity = Math.max(0, -dx / 100); };
+    card.onpointerup = () => { const d = dx; sx = null; dx = 0; if (d > 90) answer('yes'); else if (d < -90) answer('no'); else { card.style.transform = ''; card.querySelectorAll('.tag').forEach(t => t.style.opacity = 0); } };
+    stage.append(card);
+  }
+  function answer(c) { if (i >= p.options.length) return; choices[i] = c; i++; render(); }
+  async function finish() {
+    stage.replaceChildren(el('div', { className: 'card', textContent: 'Sending…' }));
+    store.set('name', name.value);
+    try { const r = await api('/' + p.id + '/vote', { voterId, name: name.value, choices }); store.set('voted-' + p.id, '1'); showResults(r); }
+    catch (e) { stage.replaceChildren(el('div', { className: 'err', textContent: e.message }), el('button', { textContent: 'Try again', onclick: finish })); }
+  }
+  render();
+}
+
+function showResults(p) {
+  let timer;
+  const draw = (p) => {
+    const admin = store.get('admin-' + p.id);
+    const kids = [];
+    if (new URLSearchParams(location.search).get('new')) {
+      const url = location.origin + '/p/' + p.id;
+      kids.push(el('div', { className: 'sub', textContent: 'Share this link with your group:' }), el('div', { className: 'link', textContent: url }),
+        el('button', { textContent: navigator.share ? 'Share link' : 'Copy link', onclick: async () => { try { navigator.share ? await navigator.share({ title: p.question, url }) : await navigator.clipboard.writeText(url) } catch {} } }), el('div', { style: 'height:16px' }));
+    }
+    kids.push(el('h1', { textContent: p.question }), el('p', { className: 'sub', textContent: `${p.voters} voted${p.closed ? ' · closed' : ' · updates live'}` }));
+    if (p.winners.length === 1) kids.push(el('div', { className: 'win-banner', textContent: '🎉 ' + p.options[p.winners[0]] }));
+    else if (p.winners.length > 1) {
+      const b = el('div', { className: 'win-banner', textContent: `Tie: ${p.winners.map(w => p.options[w]).join(' / ')}` });
+      kids.push(b, el('button', { className: 'ghost', textContent: '🎲 Break the tie', onclick: () => { b.textContent = '🎉 ' + p.options[p.winners[Math.floor(Math.random() * p.winners.length)]]; } }), el('div', { style: 'height:12px' }));
+    } else if (p.voters) kids.push(el('div', { className: 'win-banner', textContent: 'No option works for everyone 😬' }));
+    [...p.scores.keys()].sort((a, b) => p.scores[b].yes - p.scores[a].yes).forEach(k => {
+      const s = p.scores[k];
+      kids.push(el('div', { className: 'res' + (p.winners.includes(k) ? ' win' : '') + (s.veto ? ' out' : '') },
+        el('b', {}, el('span', { textContent: s.text }), el('span', { textContent: s.veto ? 'vetoed' : s.yes + ' yes' })),
+        el('div', { className: 'bar' }, el('i', { style: `width:${p.voters ? s.yes / p.voters * 100 : 0}%` }))));
+    });
+    if (admin && !p.closed) kids.push(el('button', { className: 'ghost', textContent: 'Close voting', onclick: async () => { const r = await api('/' + p.id + '/close', { adminToken: admin }); draw(r); } }));
+    kids.push(el('div', { style: 'height:10px' }), el('button', { className: 'ghost', textContent: 'Start a new poll', onclick: () => location.href = '/' }));
+    $app.replaceChildren(...kids);
+  };
+  draw(p); clearInterval(window.__t);
+  if (!p.closed) window.__t = setInterval(async () => { try { draw(await api('/' + p.id)); } catch {} }, 3000);
+}
+
+const m = location.pathname.match(/^\/p\/([\w-]+)/);
+m ? poll(m[1]) : home();
+</script></body></html>
